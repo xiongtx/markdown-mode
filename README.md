@@ -421,10 +421,12 @@ keybindings by pressing <kbd>C-c C-h</kbd>.
 
     The usual Emacs commands can be used to move by defuns
     (top-level major definitions).  In markdown-mode, a defun is a
-    section.  As usual, <kbd>C-M-a</kbd> will move the point to the
-    beginning of the current or preceding defun, <kbd>C-M-e</kbd> will move
-    to the end of the current or following defun, and <kbd>C-M-h</kbd> will
-    put the region around the entire defun.
+    section and its subsections--in other words, a subtree.  As
+    usual, <kbd>C-M-a</kbd> will move the point to the beginning of the
+    current or preceding defun, <kbd>C-M-e</kbd> will move to the end of the
+    current or following defun, and <kbd>C-M-h</kbd> will mark the entire
+    defun.  Likewise, <kbd>C-x n d</kbd> will narrow to the defun and
+    <kbd>C-x n w</kbd> will widen, as usual.
 
 As noted, many of the commands above behave differently depending
 on whether Transient Mark mode is enabled or not.  When it makes

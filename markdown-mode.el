@@ -441,10 +441,12 @@
 ;;
 ;;     The usual Emacs commands can be used to move by defuns
 ;;     (top-level major definitions).  In markdown-mode, a defun is a
-;;     section.  As usual, `C-M-a` will move the point to the
-;;     beginning of the current or preceding defun, `C-M-e` will move
-;;     to the end of the current or following defun, and `C-M-h` will
-;;     put the region around the entire defun.
+;;     section and its subsections--in other words, a subtree.  As
+;;     usual, `C-M-a` will move the point to the beginning of the
+;;     current or preceding defun, `C-M-e` will move to the end of the
+;;     current or following defun, and `C-M-h` will mark the entire
+;;     defun.  Likewise, `C-x n d` will narrow to the defun and
+;;     `C-x n w` will widen, as usual.
 ;;
 ;; As noted, many of the commands above behave differently depending
 ;; on whether Transient Mark mode is enabled or not.  When it makes
@@ -3454,7 +3456,7 @@ be used to populate the title attribute when converted to XHTML."
     (cl-case markdown-reference-location
       (end         (goto-char (point-max)))
       (immediately (markdown-end-of-block))
-      (header      (markdown-end-of-defun)))
+      (header      (markdown-next-heading)))
     (unless (markdown-cur-line-blank-p) (insert "\n"))
     (insert "\n[" label "]: ")
     (if url
@@ -4005,7 +4007,7 @@ automatically in order to have the correct markup."
   (cond
    ((eq markdown-footnote-location 'end) (goto-char (point-max)))
    ((eq markdown-footnote-location 'immediately) (markdown-end-of-block))
-   ((eq markdown-footnote-location 'header) (markdown-end-of-defun))))
+   ((eq markdown-footnote-location 'header) (markdown-next-heading))))
 
 (defun markdown-footnote-kill ()
   "Kill the footnote at point.
@@ -5387,30 +5389,68 @@ a list."
 ;;; Movement ==================================================================
 
 (defun markdown-beginning-of-defun (&optional arg)
-  "`beginning-of-defun-function' for Markdown.
-Move backward to the beginning of the current or previous section.
-When ARG is non-nil, repeat that many times.  When ARG is negative,
-move forward to the ARG-th following section."
-  (interactive "P")
+  "Move to beginning of section, up the subtree, or to previous sibling.
+This is a `beginning-of-defun-function' for Markdown.  When ARG is
+non-nil, repeat that many times.  When ARG is negative, move
+forward to the ARG-th following section."
+  (interactive "p")
   (or arg (setq arg 1))
-  (forward-char 1)
-  (or (re-search-backward markdown-regex-header nil t arg)
-      (goto-char (point-min))))
+  (if (< arg 0)
+      (markdown-end-of-defun (- arg))
+    ;; Move to section heading if not there already.
+    (unless (looking-at markdown-regex-header)
+      (condition-case nil
+          (markdown-back-to-heading t)
+        (error (goto-char (point-min))
+               (setq arg 0)))
+      (setq arg (1- arg)))
+    (let ((fail nil))
+      (dotimes (_ arg)
+        ;; Try moving up the hierarchy first.
+        (unless fail
+          ;; Try moving up the hierarchy first.
+          (condition-case nil
+              (markdown-up-heading 1)
+            (error (setq fail t)))
+          ;; If we can't move up, try a previous sibling heading.
+          (when fail
+            (setq fail nil)
+            (condition-case nil
+                (markdown-backward-same-level 1)
+              (error (setq fail t))))
+          ;; Otherwise, the point must be before the first heading.
+          (when fail
+            (goto-char (point-min))))))))
 
 (defun markdown-end-of-defun (&optional arg)
-  "`end-of-defun-function' for Markdown.
-Move forward to the end of the current or following section.
-When ARG is non-nil, repeat that many times.  When ARG is negative,
-move back to the ARG-th preceding section."
-  (interactive "P")
+  "Move to the end of the current or following subtree.
+This is an `end-of-defun-function' for Markdown.  When ARG is
+non-nil, repeat that many times.  When ARG is negative, move back
+to the ARG-th preceding section."
+  (interactive "p")
   (or arg (setq arg 1))
-  (when (looking-at markdown-regex-header)
-    (goto-char (match-beginning 0))
-    (forward-char 1))
-  (if (re-search-forward markdown-regex-header nil t arg)
-      (goto-char (match-beginning 0))
-    (goto-char (point-max)))
-  (skip-syntax-backward "-"))
+  (if (< arg 0)
+      (markdown-beginning-of-defun (- arg))
+    ;; Attempt to move back to the section heading first.
+    (condition-case nil
+        (save-excursion (markdown-back-to-heading t))
+      (error
+       ;; If the point is before first header, move to first header.
+       (markdown-next-heading)
+       (setq arg (1- arg))))
+    (dotimes (n arg)
+      (let ((start (point))
+            (last (= n arg)))
+        (markdown-end-of-subtree t last)
+        (when (= start (point))
+          ;; If the point is at the end of the subtree already, move
+          ;; up and forward at the higher level first.  On failure,
+          ;; move to the end of the buffer.
+          (condition-case nil
+              (progn (markdown-up-heading 1)
+                     (markdown-forward-same-level 1)
+                     (markdown-end-of-subtree t last))
+            (error (goto-char (point-max)))))))))
 
 (defun markdown-beginning-of-block ()
   "Move the point to the start of the previous text block."
@@ -5600,11 +5640,13 @@ Only visible heading lines are considered, unless INVISIBLE-OK is non-nil."
   "Return t if point is on a (visible) heading line."
   (get-text-property (point) 'markdown-heading))
 
-(defun markdown-end-of-subtree (&optional invisible-OK)
+(defun markdown-end-of-subtree (&optional invisible-OK to-heading)
   "Move to the end of the current subtree.
-Only visible heading lines are considered, unless INVISIBLE-OK is
-non-nil.
-Derived from `org-end-of-subtree'."
+Only visible header lines are considered, unless INVISIBLE-OK is
+non-nil.  When TO-HEADING is non-nil, move to the point at which
+the next header begins.  This is useful when calling the function
+repeatedly, to move across subtrees."
+  ;; This function is derived from `org-end-of-subtree'.
   (markdown-back-to-heading invisible-OK)
   (let ((first t)
         (level (markdown-outline-level)))
@@ -5612,13 +5654,14 @@ Derived from `org-end-of-subtree'."
                 (or first (> (markdown-outline-level) level)))
       (setq first nil)
       (markdown-next-heading))
-    (if (memq (preceding-char) '(?\n ?\^M))
-        (progn
-          ;; Go to end of line before heading
-          (forward-char -1)
-          (if (memq (preceding-char) '(?\n ?\^M))
-              ;; leave blank line before heading
-              (forward-char -1)))))
+    (unless to-heading
+      (if (memq (preceding-char) '(?\n ?\^M))
+          (progn
+            ;; Go to end of line before heading
+            (forward-char -1)
+            (if (memq (preceding-char) '(?\n ?\^M))
+                ;; leave blank line before heading
+                (forward-char -1))))))
   (point))
 
 (defun markdown-outline-fix-visibility ()
